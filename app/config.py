@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     app_debug: bool = True
+    cors_allow_origins: str = Field(default="*", alias="CORS_ALLOW_ORIGINS")
+    cors_allow_methods: str = Field(default="*", alias="CORS_ALLOW_METHODS")
+    cors_allow_headers: str = Field(default="*", alias="CORS_ALLOW_HEADERS")
+    cors_allow_credentials: bool = Field(default=False, alias="CORS_ALLOW_CREDENTIALS")
 
     efi_client_id: str = Field(default="", alias="EFI_CLIENT_ID")
     efi_client_secret: str = Field(default="", alias="EFI_CLIENT_SECRET")
@@ -44,3 +48,10 @@ def get_settings() -> Settings:
             else "https://cobrancas.api.efipay.com.br"
         )
     return settings
+
+
+def parse_cors_values(raw_value: str) -> list[str]:
+    value = raw_value.strip()
+    if value == "*":
+        return ["*"]
+    return [item.strip() for item in value.split(",") if item.strip()]

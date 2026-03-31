@@ -41,6 +41,13 @@ Preencha principalmente:
 - `HASURA_GRAPHQL_URL`
 - `HASURA_ADMIN_SECRET`
 
+Para requests vindas do front-end (CORS), ajuste se necessário:
+
+- `CORS_ALLOW_ORIGINS` (`*` ou lista separada por vírgula, ex.: `http://localhost:3000,https://app.seudominio.com`)
+- `CORS_ALLOW_METHODS` (`*` ou lista separada por vírgula, ex.: `GET,POST,OPTIONS`)
+- `CORS_ALLOW_HEADERS` (`*` ou lista separada por vírgula, ex.: `Authorization,Content-Type`)
+- `CORS_ALLOW_CREDENTIALS` (`true`/`false`)
+
 ## Rodando localmente
 
 ```bash

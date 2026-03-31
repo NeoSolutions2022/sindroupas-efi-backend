@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.config import get_settings
+from app.config import get_settings, parse_cors_values
 from app.models import CreateBoletoRequest, CreateBoletoResponse
 from app.services.efi import EfiAPIError, EfiClient
 from app.services.hasura import HasuraAPIError, HasuraClient
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=parse_cors_values(settings.cors_allow_origins),
+    allow_methods=parse_cors_values(settings.cors_allow_methods),
+    allow_headers=parse_cors_values(settings.cors_allow_headers),
+    allow_credentials=settings.cors_allow_credentials,
+)
 
 
 @app.get("/health")
