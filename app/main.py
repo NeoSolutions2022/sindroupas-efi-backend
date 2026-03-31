@@ -34,8 +34,9 @@ def create_boleto(payload: CreateBoletoRequest):
     try:
         efi_response = efi_client.create_boleto(payload)
     except EfiAPIError as exc:
+        status_code = exc.status_code if 400 <= exc.status_code <= 599 else 502
         return JSONResponse(
-            status_code=502,
+            status_code=status_code,
             content={
                 "ok": False,
                 "stage": "efi",
@@ -47,8 +48,9 @@ def create_boleto(payload: CreateBoletoRequest):
     try:
         hasura_response = hasura_client.insert_financeiro_boleto(payload, efi_response)
     except HasuraAPIError as exc:
+        status_code = exc.status_code if 400 <= exc.status_code <= 599 else 502
         return JSONResponse(
-            status_code=502,
+            status_code=status_code,
             content={
                 "ok": False,
                 "stage": "hasura",

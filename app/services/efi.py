@@ -5,6 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 import requests
+from requests import RequestException
 
 from app.config import Settings
 from app.models import CreateBoletoRequest
@@ -30,12 +31,21 @@ class EfiClient:
             "Authorization": f"Basic {self._basic_auth_header()}",
             "Content-Type": "application/json",
         }
-        response = requests.post(
-            f"{self.settings.efi_base_url}/v1/authorize",
-            headers=headers,
-            json={"grant_type": "client_credentials"},
-            timeout=self.settings.efi_timeout_seconds,
-        )
+        try:
+            response = requests.post(
+                f"{self.settings.efi_base_url}/v1/authorize",
+                headers=headers,
+                json={"grant_type": "client_credentials"},
+                timeout=self.settings.efi_timeout_seconds,
+            )
+        except RequestException as exc:
+            raise EfiAPIError(
+                502,
+                {
+                    "message": "Falha de conexão ao autenticar na EFI.",
+                    "error": str(exc),
+                },
+            ) from exc
 
         if not response.ok:
             raise EfiAPIError(response.status_code, self._safe_json(response))
@@ -50,12 +60,21 @@ class EfiClient:
         }
 
         body = self._build_efi_body(payload)
-        response = requests.post(
-            f"{self.settings.efi_base_url}/v1/charge/one-step",
-            headers=headers,
-            json=body,
-            timeout=self.settings.efi_timeout_seconds,
-        )
+        try:
+            response = requests.post(
+                f"{self.settings.efi_base_url}/v1/charge/one-step",
+                headers=headers,
+                json=body,
+                timeout=self.settings.efi_timeout_seconds,
+            )
+        except RequestException as exc:
+            raise EfiAPIError(
+                502,
+                {
+                    "message": "Falha de conexão ao criar boleto na EFI.",
+                    "error": str(exc),
+                },
+            ) from exc
 
         if not response.ok:
             raise EfiAPIError(response.status_code, self._safe_json(response))

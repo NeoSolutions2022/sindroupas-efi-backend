@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import requests
+from requests import RequestException
 
 from app.config import Settings
 from app.models import CreateBoletoRequest
@@ -60,21 +61,32 @@ class HasuraClient:
             "Content-Type": "application/json",
             "x-hasura-admin-secret": self.settings.hasura_admin_secret,
         }
-        response = requests.post(
-            self.settings.hasura_graphql_url,
-            headers=headers,
-            json={
-                "query": INSERT_MUTATION,
-                "variables": {
-                    "object": self._build_insert_object(payload, efi_response),
+        try:
+            response = requests.post(
+                self.settings.hasura_graphql_url,
+                headers=headers,
+                json={
+                    "query": INSERT_MUTATION,
+                    "variables": {
+                        "object": self._build_insert_object(payload, efi_response),
+                    },
                 },
-            },
-            timeout=self.settings.hasura_timeout_seconds,
-        )
+                timeout=self.settings.hasura_timeout_seconds,
+            )
+        except RequestException as exc:
+            raise HasuraAPIError(
+                502,
+                {
+                    "message": "Falha de conexão ao inserir boleto no Hasura.",
+                    "error": str(exc),
+                },
+            ) from exc
 
         body = self._safe_json(response)
-        if not response.ok or body.get("errors"):
+        if not response.ok:
             raise HasuraAPIError(response.status_code, body)
+        if body.get("errors"):
+            raise HasuraAPIError(422, body)
 
         return body
 
