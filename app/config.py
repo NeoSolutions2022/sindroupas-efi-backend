@@ -22,6 +22,7 @@ class Settings(BaseSettings):
         alias="EFI_BASE_URL",
     )
     efi_timeout_seconds: int = Field(default=30, alias="EFI_TIMEOUT_SECONDS")
+    efi_webhook_url: str | None = Field(default=None, alias="EFI_WEBHOOK_URL")
 
     hasura_graphql_url: str = Field(default="", alias="HASURA_GRAPHQL_URL")
     hasura_admin_secret: str = Field(default="", alias="HASURA_ADMIN_SECRET")

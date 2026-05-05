@@ -81,6 +81,31 @@ class EfiClient:
 
         return response.json()
 
+    def get_charge(self, charge_id: int) -> dict[str, Any]:
+        return self._request("get", f"/v1/charge/{charge_id}")
+
+    def cancel_charge(self, charge_id: int) -> dict[str, Any]:
+        return self._request("put", f"/v1/charge/{charge_id}/cancel")
+
+    def update_charge_due_date(self, charge_id: int, vencimento: str) -> dict[str, Any]:
+        return self._request("put", f"/v1/charge/{charge_id}/billet", {"expire_at": vencimento})
+
+    def update_charge_metadata(
+        self,
+        charge_id: int,
+        custom_id: str | None = None,
+        notification_url: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {}
+        if custom_id:
+            body["custom_id"] = custom_id
+        if notification_url:
+            body["notification_url"] = notification_url
+        return self._request("put", f"/v1/charge/{charge_id}/metadata", body)
+
+    def get_notification(self, notification_token: str) -> dict[str, Any]:
+        return self._request("get", f"/v1/notification/{notification_token}")
+
     def _build_efi_body(self, payload: CreateBoletoRequest) -> dict[str, Any]:
         metadata: dict[str, Any] = {}
         if payload.custom_id:
@@ -119,6 +144,8 @@ class EfiClient:
 
         if metadata:
             body["metadata"] = metadata
+        elif self.settings.efi_webhook_url:
+            body["metadata"] = {"notification_url": self.settings.efi_webhook_url}
 
         return body
 
@@ -133,3 +160,29 @@ class EfiClient:
             return response.json()
         except Exception:
             return {"raw": response.text}
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        token = self.get_access_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        try:
+            response = requests.request(
+                method.upper(),
+                f"{self.settings.efi_base_url}{path}",
+                headers=headers,
+                json=body,
+                timeout=self.settings.efi_timeout_seconds,
+            )
+        except RequestException as exc:
+            raise EfiAPIError(502, {"message": "Falha de conexão ao chamar endpoint da EFI.", "error": str(exc)}) from exc
+
+        if not response.ok:
+            raise EfiAPIError(response.status_code, self._safe_json(response))
+        return response.json()

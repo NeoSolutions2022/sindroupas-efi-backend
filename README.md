@@ -38,6 +38,7 @@ Preencha principalmente:
 - `EFI_CLIENT_ID`
 - `EFI_CLIENT_SECRET`
 - `EFI_BASE_URL`
+- `EFI_WEBHOOK_URL` (opcional, recomendado)
 - `HASURA_GRAPHQL_URL`
 - `HASURA_ADMIN_SECRET`
 
@@ -198,6 +199,43 @@ Opcionais mais úteis:
   }
 }
 ```
+
+## Novos endpoints (integração front)
+
+### 1) Consultar boleto
+- `GET /boletos/{charge_id}`
+
+### 2) Cancelar boleto
+- `PUT /boletos/{charge_id}/cancelar`
+
+### 3) Alterar vencimento
+- `PUT /boletos/{charge_id}/vencimento`
+```json
+{
+  "charge_id": 123456,
+  "vencimento": "2026-05-10"
+}
+```
+
+### 4) Atualizar metadata
+- `PUT /boletos/{charge_id}/metadata`
+```json
+{
+  "charge_id": 123456,
+  "custom_id": "novo-id-local",
+  "notification_url": "https://api.seudominio.com/webhook"
+}
+```
+
+### 5) Consultar notificação por token
+- `GET /notificacoes/{notification_token}`
+
+### 6) Webhook para EFI
+- `POST /webhook`
+- Endpoint criado para receber payload da EFI.
+- **Importante**: em ambiente local/interno, a EFI não consegue chamar URL privada. Use URL pública (domínio próprio, túnel como ngrok/cloudflared) e configure `EFI_WEBHOOK_URL` com essa URL pública.
+
+Quando você não enviar `notification_url` no `POST /boletos`, a API usa `EFI_WEBHOOK_URL` automaticamente (se configurado).
 
 ### Erro na EFI
 
