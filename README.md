@@ -38,6 +38,7 @@ Preencha principalmente:
 - `EFI_CLIENT_ID`
 - `EFI_CLIENT_SECRET`
 - `EFI_BASE_URL`
+- `EFI_WEBHOOK_URL` (opcional, recomendado)
 - `HASURA_GRAPHQL_URL`
 - `HASURA_ADMIN_SECRET`
 
@@ -199,6 +200,43 @@ Opcionais mais úteis:
 }
 ```
 
+## Novos endpoints (integração front)
+
+### 1) Consultar boleto
+- `GET /boletos/{charge_id}`
+
+### 2) Cancelar boleto
+- `PUT /boletos/{charge_id}/cancelar`
+
+### 3) Alterar vencimento
+- `PUT /boletos/{charge_id}/vencimento`
+```json
+{
+  "charge_id": 123456,
+  "vencimento": "2026-05-10"
+}
+```
+
+### 4) Atualizar metadata
+- `PUT /boletos/{charge_id}/metadata`
+```json
+{
+  "charge_id": 123456,
+  "custom_id": "novo-id-local",
+  "notification_url": "https://api.seudominio.com/webhook"
+}
+```
+
+### 5) Consultar notificação por token
+- `GET /notificacoes/{notification_token}`
+
+### 6) Webhook para EFI
+- `POST /webhook`
+- Endpoint criado para receber payload da EFI.
+- **Importante**: em ambiente local/interno, a EFI não consegue chamar URL privada. Use URL pública (domínio próprio, túnel como ngrok/cloudflared) e configure `EFI_WEBHOOK_URL` com essa URL pública.
+
+Quando você não enviar `notification_url` no `POST /boletos`, a API usa `EFI_WEBHOOK_URL` automaticamente (se configurado).
+
 ### Erro na EFI
 
 ```json
@@ -235,6 +273,30 @@ Opcionais mais úteis:
   }
 }
 ```
+
+
+## Debug de criação de boletos
+
+Quando `POST /boletos` falhar, consulte os logs da API. A aplicação agora registra:
+
+- início da criação com `empresa_id`, `tipo`, `valor`, `vencimento`, `custom_id` e se veio `notification_url`;
+- autenticação na EFI (`EFI auth`) com status e tempo em `elapsed_ms`;
+- criação do boleto na EFI com `charge_id`, `efi_status`, status HTTP, tempo e corpo de erro da EFI quando houver falha;
+- insert no Hasura com `efi_charge_id`, status HTTP, tempo e corpo de erro GraphQL quando houver falha;
+- exceções de rede/timeout com stack trace;
+- webhook da EFI recebendo `notification=<token>` em `application/x-www-form-urlencoded`, JSON ou query string, e consulta assíncrona da notificação na EFI para log.
+
+Os campos sensíveis (`cpf`, `cnpj`, `email`, `phone_number`, `authorization`, `x-hasura-admin-secret` e `client_secret`) são mascarados nos logs.
+
+Interpretação rápida:
+
+- `504 Gateway Timeout`: normalmente indica que o proxy/gateway esperou demais pela resposta do backend. Compare o último log antes do 504: se parou em `EFI auth`, `EFI create boleto` ou `Hasura boleto insert`, esse é o trecho lento/travado.
+- `502 Bad Gateway` com `stage=efi`: falha de conexão/time-out na EFI ou erro HTTP retornado pela EFI.
+- `502 Bad Gateway` com `stage=hasura`: boleto provavelmente foi criado na EFI, mas o insert local no Hasura falhou ou expirou. Nesse caso use o `charge_id` do log/resposta EFI para reconciliar o registro.
+
+Se o payload tiver `custom_id` e não tiver `notification_url`, a API usa `EFI_WEBHOOK_URL` como fallback para `metadata.notification_url` quando essa env estiver configurada.
+
+A EFI envia o webhook como corpo simples `notification=<token>`. A rota `POST /webhook` aceita esse formato e retorna `200 OK` para evitar falha no painel da EFI; depois agenda a consulta de `/v1/notification/{token}` em background apenas para log.
 
 ## Como o insert local é montado
 
