@@ -118,11 +118,24 @@ class HasuraClient:
                 0,
             )
         )
+        returning = (
+            (body.get("data") or {})
+            .get("update_financeiro_boletos", {})
+            .get("returning", [])
+        )
         if affected_rows == 0:
             logger.warning(
                 "Hasura boleto status update matched no rows efi_charge_id=%s efi_status=%s",
                 efi_charge_id,
                 efi_status,
+            )
+        else:
+            logger.info(
+                "Hasura boleto status update affected rows efi_charge_id=%s efi_status=%s affected_rows=%s returning=%s",
+                efi_charge_id,
+                efi_status,
+                affected_rows,
+                sanitize_for_log(returning),
             )
         return body
 

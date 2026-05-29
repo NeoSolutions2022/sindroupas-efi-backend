@@ -155,6 +155,11 @@ def process_efi_notification(notification_token: str) -> None:
     )
 
     updates = extract_boleto_status_updates(efi_response)
+    logger.info(
+        "EFI webhook extracted boleto status updates token=%s updates=%s",
+        notification_token,
+        sanitize_for_log(updates),
+    )
     if not updates:
         logger.warning(
             "EFI webhook produced no boleto status updates token=%s response=%s",
@@ -180,12 +185,16 @@ def process_efi_notification(notification_token: str) -> None:
             )
             continue
 
+        update_result = (hasura_response.get("data") or {}).get(
+            "update_financeiro_boletos", {}
+        )
         logger.info(
-            "Hasura boleto status update completed token=%s charge_id=%s efi_status=%s response=%s",
+            "Hasura boleto status update completed token=%s charge_id=%s efi_status=%s affected_rows=%s returning=%s",
             notification_token,
             update["charge_id"],
             update["efi_status"],
-            sanitize_for_log(hasura_response),
+            update_result.get("affected_rows"),
+            sanitize_for_log(update_result.get("returning")),
         )
 
 
