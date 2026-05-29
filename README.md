@@ -283,7 +283,8 @@ Quando `POST /boletos` falhar, consulte os logs da API. A aplicação agora regi
 - autenticação na EFI (`EFI auth`) com status e tempo em `elapsed_ms`;
 - criação do boleto na EFI com `charge_id`, `efi_status`, status HTTP, tempo e corpo de erro da EFI quando houver falha;
 - insert no Hasura com `efi_charge_id`, status HTTP, tempo e corpo de erro GraphQL quando houver falha;
-- exceções de rede/timeout com stack trace.
+- exceções de rede/timeout com stack trace;
+- webhook da EFI recebendo `notification=<token>` em `application/x-www-form-urlencoded`, JSON ou query string, e consulta assíncrona da notificação na EFI para log.
 
 Os campos sensíveis (`cpf`, `cnpj`, `email`, `phone_number`, `authorization`, `x-hasura-admin-secret` e `client_secret`) são mascarados nos logs.
 
@@ -294,6 +295,8 @@ Interpretação rápida:
 - `502 Bad Gateway` com `stage=hasura`: boleto provavelmente foi criado na EFI, mas o insert local no Hasura falhou ou expirou. Nesse caso use o `charge_id` do log/resposta EFI para reconciliar o registro.
 
 Se o payload tiver `custom_id` e não tiver `notification_url`, a API usa `EFI_WEBHOOK_URL` como fallback para `metadata.notification_url` quando essa env estiver configurada.
+
+A EFI envia o webhook como corpo simples `notification=<token>`. A rota `POST /webhook` aceita esse formato e retorna `200 OK` para evitar falha no painel da EFI; depois agenda a consulta de `/v1/notification/{token}` em background apenas para log.
 
 ## Como o insert local é montado
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
+from urllib.parse import parse_qs
 
-from fastapi import FastAPI
+from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -53,6 +55,56 @@ def downstream_error_response(
         content.update(extra)
     content[stage] = exc.body
     return JSONResponse(status_code=status_code, content=content)
+
+
+def extract_notification_token(
+    raw_body: bytes, content_type: str, query_params: dict[str, str]
+) -> tuple[str | None, Any]:
+    if query_params.get("notification"):
+        return query_params["notification"], {
+            "notification": query_params["notification"]
+        }
+
+    body_text = raw_body.decode("utf-8", errors="replace")
+    if not body_text:
+        return None, {}
+
+    if "application/json" in content_type:
+        try:
+            payload = json.loads(body_text)
+        except json.JSONDecodeError:
+            return None, body_text
+        if isinstance(payload, dict):
+            token = payload.get("notification") or payload.get("notification_token")
+            return token, payload
+        return None, payload
+
+    parsed = parse_qs(body_text, keep_blank_values=True)
+    if parsed:
+        payload = {key: values[-1] if values else "" for key, values in parsed.items()}
+        return payload.get("notification"), payload
+
+    return None, body_text
+
+
+def process_efi_notification(notification_token: str) -> None:
+    efi_client = EfiClient(settings)
+    try:
+        efi_response = efi_client.get_notification(notification_token)
+    except EfiAPIError as exc:
+        logger.error(
+            "EFI webhook notification lookup failed token=%s status_code=%s body=%s",
+            notification_token,
+            exc.status_code,
+            sanitize_for_log(exc.body),
+        )
+        return
+
+    logger.info(
+        "EFI webhook notification lookup succeeded token=%s response=%s",
+        notification_token,
+        sanitize_for_log(efi_response),
+    )
 
 
 @app.get("/health")
@@ -162,6 +214,21 @@ def get_notification(notification_token: str):
 
 
 @app.post("/webhook")
-def efi_webhook(payload: dict):
-    logger.info("EFI webhook received payload=%s", sanitize_for_log(payload))
-    return {"ok": True, "received": payload}
+async def efi_webhook(request: Request, background_tasks: BackgroundTasks):
+    raw_body = await request.body()
+    notification_token, payload = extract_notification_token(
+        raw_body,
+        request.headers.get("content-type", ""),
+        dict(request.query_params),
+    )
+    logger.info(
+        "EFI webhook received content_type=%s token_present=%s payload=%s",
+        request.headers.get("content-type", ""),
+        bool(notification_token),
+        sanitize_for_log(payload),
+    )
+
+    if notification_token:
+        background_tasks.add_task(process_efi_notification, notification_token)
+
+    return {"ok": True, "notification": notification_token}
