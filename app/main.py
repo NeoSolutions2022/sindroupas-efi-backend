@@ -170,16 +170,27 @@ def efi_charge_to_update_object(charge: dict[str, Any]) -> dict[str, Any]:
 def reconcile_boletos(payload: ReconcileBoletosRequest) -> dict[str, Any]:
     efi_client = EfiClient(settings)
     hasura_client = HasuraClient(settings)
-    efi_response = efi_client.list_charges(
-        payload.begin_date.isoformat(),
-        payload.end_date.isoformat(),
-        payload.status,
-        payload.limit,
-        payload.page,
-    )
-    efi_charges = (
-        efi_response.get("data") if isinstance(efi_response.get("data"), list) else []
-    )
+
+    efi_responses: list[dict[str, Any]] = []
+    efi_charges: list[dict[str, Any]] = []
+    for page in range(1, payload.max_pages + 1):
+        efi_response = efi_client.list_charges(
+            payload.begin_date.isoformat(),
+            payload.end_date.isoformat(),
+            payload.status,
+            payload.limit,
+            page,
+        )
+        efi_responses.append(efi_response)
+        page_charges = (
+            efi_response.get("data")
+            if isinstance(efi_response.get("data"), list)
+            else []
+        )
+        efi_charges.extend(page_charges)
+        if len(page_charges) < payload.limit:
+            break
+
     hasura_boletos = hasura_client.list_boletos_for_reconciliation(
         payload.begin_date.isoformat(),
         payload.end_date.isoformat(),
@@ -187,11 +198,15 @@ def reconcile_boletos(payload: ReconcileBoletosRequest) -> dict[str, Any]:
     hasura_charge_ids = {
         str(b.get("efi_charge_id")) for b in hasura_boletos if b.get("efi_charge_id")
     }
+    selected_boleto_ids = {str(item) for item in payload.boleto_ids or []}
 
     efi_by_key: dict[tuple[str, int | None], list[dict[str, Any]]] = defaultdict(list)
+    efi_by_charge_id: dict[str, dict[str, Any]] = {}
     for charge in efi_charges:
         billet = pick_nested(charge, ["payment.banking_billet"]) or {}
         due_date = billet.get("expire_at") or charge.get("expire_at")
+        charge_id = str(charge.get("id") or charge.get("charge_id"))
+        efi_by_charge_id[charge_id] = charge
         efi_by_key[
             (
                 str(due_date),
@@ -209,6 +224,42 @@ def reconcile_boletos(payload: ReconcileBoletosRequest) -> dict[str, Any]:
 
     matches: list[dict[str, Any]] = []
     conflicts: list[dict[str, Any]] = []
+    used_charge_ids: set[str] = set()
+
+    for boleto in hasura_boletos:
+        if selected_boleto_ids and str(boleto.get("id")) not in selected_boleto_ids:
+            continue
+        current_charge_id = str(boleto.get("efi_charge_id") or "")
+        if not current_charge_id:
+            continue
+        charge = efi_by_charge_id.get(current_charge_id)
+        if not charge:
+            conflicts.append(
+                {
+                    "boleto_id": boleto.get("id"),
+                    "efi_charge_id": current_charge_id,
+                    "reason": "charge_id_not_found_in_efi_scan",
+                }
+            )
+            continue
+        update = efi_charge_to_update_object(charge)
+        changed_fields = {
+            key: {"hasura": boleto.get(key), "efi": value}
+            for key, value in update.items()
+            if value is not None and str(boleto.get(key) or "") != str(value)
+        }
+        if changed_fields:
+            matches.append(
+                {
+                    "reason": "outdated_efi_fields",
+                    "changed_fields": changed_fields,
+                    "boleto": boleto,
+                    "efi_charge": charge,
+                    "update": update,
+                }
+            )
+        used_charge_ids.add(current_charge_id)
+
     for key, boletos in hasura_by_key.items():
         charges = efi_by_key.get(key, [])
         if len(boletos) != 1 or len(charges) != 1:
@@ -224,7 +275,9 @@ def reconcile_boletos(payload: ReconcileBoletosRequest) -> dict[str, Any]:
         boleto = boletos[0]
         charge = charges[0]
         charge_id = str(charge.get("id") or charge.get("charge_id"))
-        if boleto.get("efi_charge_id") == charge_id:
+        if selected_boleto_ids and str(boleto.get("id")) not in selected_boleto_ids:
+            continue
+        if boleto.get("efi_charge_id") == charge_id or charge_id in used_charge_ids:
             continue
         if charge_id in hasura_charge_ids:
             conflicts.append(
@@ -236,12 +289,9 @@ def reconcile_boletos(payload: ReconcileBoletosRequest) -> dict[str, Any]:
                 }
             )
             continue
-        if payload.boleto_ids and str(boleto.get("id")) not in {
-            str(item) for item in payload.boleto_ids
-        }:
-            continue
         matches.append(
             {
+                "reason": "missing_or_mismatched_charge_id",
                 "boleto": boleto,
                 "efi_charge": charge,
                 "update": efi_charge_to_update_object(charge),
@@ -265,11 +315,12 @@ def reconcile_boletos(payload: ReconcileBoletosRequest) -> dict[str, Any]:
             "safe_matches": len(matches),
             "conflicts": len(conflicts),
             "updated": len(applied),
+            "efi_pages_scanned": len(efi_responses),
         },
         "matches": matches,
         "conflicts": conflicts,
         "applied_results": applied,
-        "efi": efi_response,
+        "efi_pages": efi_responses,
     }
 
 
@@ -461,38 +512,93 @@ def reconciliation_page():
 </head>
 <body>
   <h1>Reconciliação de boletos EFI x Hasura</h1>
-  <p>Primeiro execute uma prévia. A atualização só grava no Hasura quando <code>apply=true</code>.</p>
+  <p>Informe o período e execute uma varredura automática em todas as páginas configuradas da EFI. A atualização só grava no Hasura quando <code>apply=true</code>.</p>
   <form id="form">
     <label>Início <input name="begin_date" type="date" required></label>
     <label>Fim <input name="end_date" type="date" required></label>
     <label>Status EFI opcional <input name="status" placeholder="waiting, paid..."></label>
-    <label>Limite EFI <input name="limit" type="number" min="1" max="500" value="100"></label>
-    <label>Página EFI <input name="page" type="number" min="1" value="1"></label>
-    <button type="submit">Consultar prévia segura</button>
-    <button type="button" id="apply" class="danger">Aplicar matches seguros</button>
+    <label>Itens por página EFI <input name="limit" type="number" min="1" max="500" value="100"></label>
+    <label>Máximo de páginas EFI <input name="max_pages" type="number" min="1" max="50" value="10"></label>
+    <button type="submit">Executar varredura automática</button>
+    <button type="button" id="apply" class="danger" disabled>Aplicar selecionados</button>
   </form>
-  <pre id="out">Aguardando consulta...</pre>
+  <p id="summary">Aguardando consulta...</p>
+  <div id="matches"></div>
+  <h2>Conflitos que exigem revisão manual</h2>
+  <pre id="conflicts">[]</pre>
   <script>
+    let lastResult = null;
+
+    function selectedIds() {
+      return Array.from(document.querySelectorAll('input[name="boleto_id"]:checked')).map((input) => input.value);
+    }
+
+    function render(result) {
+      lastResult = result;
+      document.getElementById('summary').textContent = JSON.stringify(result.summary || {}, null, 2);
+      document.getElementById('conflicts').textContent = JSON.stringify(result.conflicts || [], null, 2);
+      const matches = result.matches || [];
+      document.getElementById('apply').disabled = matches.length === 0;
+      document.getElementById('matches').innerHTML = `
+        <h2>Incongruências corrigíveis automaticamente (${matches.length})</h2>
+        <table border="1" cellspacing="0" cellpadding="6">
+          <thead>
+            <tr>
+              <th>Aplicar</th>
+              <th>Motivo</th>
+              <th>Boleto Hasura</th>
+              <th>Vencimento</th>
+              <th>Valor</th>
+              <th>Charge ID atual</th>
+              <th>Charge ID EFI</th>
+              <th>Status Hasura</th>
+              <th>Status EFI</th>
+              <th>Campos alterados</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${matches.map((match) => `
+              <tr>
+                <td><input name="boleto_id" type="checkbox" value="${match.boleto.id}" checked></td>
+                <td>${match.reason}</td>
+                <td>${match.boleto.id}</td>
+                <td>${match.boleto.vencimento || ''}</td>
+                <td>${match.boleto.valor || ''}</td>
+                <td>${match.boleto.efi_charge_id || ''}</td>
+                <td>${match.update.efi_charge_id || ''}</td>
+                <td>${match.boleto.efi_status || ''}</td>
+                <td>${match.update.efi_status || ''}</td>
+                <td><pre>${JSON.stringify(match.changed_fields || match.update, null, 2)}</pre></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+
     async function run(apply) {
       const form = new FormData(document.getElementById('form'));
       const payload = Object.fromEntries(form.entries());
       payload.limit = Number(payload.limit || 100);
-      payload.page = Number(payload.page || 1);
+      payload.max_pages = Number(payload.max_pages || 10);
       payload.apply = apply;
+      if (apply) payload.boleto_ids = selectedIds();
       if (!payload.status) delete payload.status;
       const res = await fetch('/reconciliacao/boletos', {
         method: 'POST',
         headers: {'content-type': 'application/json'},
         body: JSON.stringify(payload)
       });
-      document.getElementById('out').textContent = JSON.stringify(await res.json(), null, 2);
+      render(await res.json());
     }
     document.getElementById('form').addEventListener('submit', (event) => {
       event.preventDefault();
       run(false);
     });
     document.getElementById('apply').addEventListener('click', () => {
-      if (confirm('Aplicar somente os matches seguros no Hasura?')) run(true);
+      const count = selectedIds().length;
+      if (count === 0) return alert('Selecione pelo menos uma incongruência.');
+      if (confirm(`Aplicar ${count} correção(ões) selecionada(s) no Hasura?`)) run(true);
     });
   </script>
 </body>

@@ -156,6 +156,6 @@ class ReconcileBoletosRequest(BaseModel):
     end_date: date
     status: str | None = None
     limit: int = Field(default=100, ge=1, le=500)
-    page: int = Field(default=1, ge=1)
+    max_pages: int = Field(default=10, ge=1, le=50)
     apply: bool = False
     boleto_ids: list[UUID] | None = None
