@@ -135,6 +135,25 @@ class EfiClient:
     def get_charge(self, charge_id: int) -> dict[str, Any]:
         return self._request("get", f"/v1/charge/{charge_id}")
 
+    def list_charges(
+        self,
+        begin_date: str,
+        end_date: str,
+        status: str | None = None,
+        limit: int = 100,
+        page: int = 1,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "charge_type": "billet",
+            "begin_date": begin_date,
+            "end_date": end_date,
+            "limit": limit,
+            "page": page,
+        }
+        if status:
+            params["status"] = status
+        return self._request("get", "/v1/charges", params=params)
+
     def cancel_charge(self, charge_id: int) -> dict[str, Any]:
         return self._request("put", f"/v1/charge/{charge_id}/cancel")
 
@@ -221,6 +240,7 @@ class EfiClient:
         method: str,
         path: str,
         body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         token = self.get_access_token()
         headers = {
@@ -234,6 +254,7 @@ class EfiClient:
                 f"{self.settings.efi_base_url}{path}",
                 headers=headers,
                 json=body,
+                params=params,
                 timeout=self.settings.efi_timeout_seconds,
             )
         except RequestException as exc:
