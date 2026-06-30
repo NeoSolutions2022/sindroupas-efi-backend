@@ -38,10 +38,14 @@ class Customer(BaseModel):
         has_company = self.juridical_person is not None
 
         if has_cpf == has_company:
-            raise ValueError("Envie exatamente um entre customer.cpf ou customer.juridical_person.")
+            raise ValueError(
+                "Envie exatamente um entre customer.cpf ou customer.juridical_person."
+            )
 
         if has_cpf and not self.name:
-            raise ValueError("customer.name é obrigatório quando customer.cpf for informado.")
+            raise ValueError(
+                "customer.name é obrigatório quando customer.cpf for informado."
+            )
 
         return self
 
@@ -89,8 +93,8 @@ class CreateBoletoRequest(BaseModel):
                     "name": "Cliente Teste",
                     "cpf": "12345678909",
                     "email": "cliente.teste@example.com",
-                    "phone_number": "11999999999"
-                }
+                    "phone_number": "11999999999",
+                },
             }
         }
     )
@@ -145,3 +149,13 @@ class UpdateBoletoMetadataRequest(EfiChargeIdRequest):
         if not self.custom_id and not self.notification_url:
             raise ValueError("Informe custom_id e/ou notification_url.")
         return self
+
+
+class ReconcileBoletosRequest(BaseModel):
+    begin_date: date
+    end_date: date
+    status: str | None = None
+    limit: int = Field(default=100, ge=1, le=500)
+    page: int = Field(default=1, ge=1)
+    apply: bool = False
+    boleto_ids: list[UUID] | None = None

@@ -67,6 +67,41 @@ mutation UpdateFinanceiroBoletoEfiStatus($efi_charge_id: String!, $_set: finance
 }
 """
 
+LIST_BOLETOS_FOR_RECONCILIATION_QUERY = """
+query ListBoletosForReconciliation($begin_date: date!, $end_date: date!) {
+  financeiro_boletos(where: {vencimento: {_gte: $begin_date, _lte: $end_date}}) {
+    id
+    empresa_id
+    valor
+    vencimento
+    status
+    descricao
+    linha_digitavel
+    pdf_url
+    efi_charge_id
+    efi_status
+    efi_barcode
+    efi_pix_txid
+    updated_at
+  }
+}
+"""
+
+UPDATE_BOLETO_EFI_DATA_MUTATION = """
+mutation UpdateBoletoEfiData($id: uuid!, $_set: financeiro_boletos_set_input!) {
+  update_financeiro_boletos_by_pk(pk_columns: {id: $id}, _set: $_set) {
+    id
+    efi_charge_id
+    efi_status
+    efi_barcode
+    linha_digitavel
+    pdf_url
+    efi_pix_txid
+    updated_at
+  }
+}
+"""
+
 
 class HasuraClient:
     def __init__(self, settings: Settings):
@@ -138,6 +173,36 @@ class HasuraClient:
                 sanitize_for_log(returning),
             )
         return body
+
+    def list_boletos_for_reconciliation(
+        self,
+        begin_date: str,
+        end_date: str,
+    ) -> list[dict[str, Any]]:
+        body = self._post_graphql(
+            LIST_BOLETOS_FOR_RECONCILIATION_QUERY,
+            {"begin_date": begin_date, "end_date": end_date},
+            "Hasura boleto reconciliation list",
+        )
+        return (body.get("data") or {}).get("financeiro_boletos", [])
+
+    def update_boleto_efi_data(
+        self,
+        boleto_id: str,
+        efi_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        update_object = {k: v for k, v in efi_data.items() if v is not None}
+        logger.info(
+            "Hasura boleto reconciliation update request boleto_id=%s efi_charge_id=%s",
+            boleto_id,
+            update_object.get("efi_charge_id"),
+        )
+        return self._post_graphql(
+            UPDATE_BOLETO_EFI_DATA_MUTATION,
+            {"id": boleto_id, "_set": update_object},
+            "Hasura boleto reconciliation update",
+            update_object,
+        )
 
     def _build_insert_object(
         self,

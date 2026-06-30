@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import defaultdict
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 from urllib.parse import parse_qs
 
 from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.config import get_settings, parse_cors_values
 from app.logging_utils import sanitize_for_log
 from app.models import (
     CreateBoletoRequest,
     CreateBoletoResponse,
+    ReconcileBoletosRequest,
     UpdateBoletoDueDateRequest,
     UpdateBoletoMetadataRequest,
 )
@@ -132,6 +135,142 @@ def pick_nested(data: dict[str, Any], paths: list[str]) -> Any:
         if found:
             return current
     return None
+
+
+def cents_from_value(value: Any) -> int | None:
+    if value is None:
+        return None
+    return int(
+        (Decimal(str(value)) * Decimal("100")).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
+    )
+
+
+def efi_charge_to_update_object(charge: dict[str, Any]) -> dict[str, Any]:
+    payment = charge.get("payment") if isinstance(charge.get("payment"), dict) else {}
+    billet = (
+        payment.get("banking_billet")
+        if isinstance(payment.get("banking_billet"), dict)
+        else {}
+    )
+    pdf = billet.get("pdf") if isinstance(billet.get("pdf"), dict) else {}
+    return {
+        "efi_charge_id": str(charge.get("id") or charge.get("charge_id")),
+        "efi_status": (
+            str(charge.get("status")) if charge.get("status") is not None else None
+        ),
+        "efi_barcode": billet.get("barcode") or charge.get("barcode"),
+        "linha_digitavel": billet.get("barcode") or charge.get("barcode"),
+        "pdf_url": pdf.get("charge") or billet.get("billet_link") or billet.get("link"),
+        "efi_pix_txid": pick_nested(charge, ["pix.txid", "payment.pix.txid"]),
+    }
+
+
+def reconcile_boletos(payload: ReconcileBoletosRequest) -> dict[str, Any]:
+    efi_client = EfiClient(settings)
+    hasura_client = HasuraClient(settings)
+    efi_response = efi_client.list_charges(
+        payload.begin_date.isoformat(),
+        payload.end_date.isoformat(),
+        payload.status,
+        payload.limit,
+        payload.page,
+    )
+    efi_charges = (
+        efi_response.get("data") if isinstance(efi_response.get("data"), list) else []
+    )
+    hasura_boletos = hasura_client.list_boletos_for_reconciliation(
+        payload.begin_date.isoformat(),
+        payload.end_date.isoformat(),
+    )
+    hasura_charge_ids = {
+        str(b.get("efi_charge_id")) for b in hasura_boletos if b.get("efi_charge_id")
+    }
+
+    efi_by_key: dict[tuple[str, int | None], list[dict[str, Any]]] = defaultdict(list)
+    for charge in efi_charges:
+        billet = pick_nested(charge, ["payment.banking_billet"]) or {}
+        due_date = billet.get("expire_at") or charge.get("expire_at")
+        efi_by_key[
+            (
+                str(due_date),
+                cents_from_value(Decimal(str(charge.get("total", 0))) / 100),
+            )
+        ].append(charge)
+
+    hasura_by_key: dict[tuple[str, int | None], list[dict[str, Any]]] = defaultdict(
+        list
+    )
+    for boleto in hasura_boletos:
+        hasura_by_key[
+            (str(boleto.get("vencimento")), cents_from_value(boleto.get("valor")))
+        ].append(boleto)
+
+    matches: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+    for key, boletos in hasura_by_key.items():
+        charges = efi_by_key.get(key, [])
+        if len(boletos) != 1 or len(charges) != 1:
+            if charges:
+                conflicts.append(
+                    {
+                        "key": key,
+                        "hasura_count": len(boletos),
+                        "efi_count": len(charges),
+                    }
+                )
+            continue
+        boleto = boletos[0]
+        charge = charges[0]
+        charge_id = str(charge.get("id") or charge.get("charge_id"))
+        if boleto.get("efi_charge_id") == charge_id:
+            continue
+        if charge_id in hasura_charge_ids:
+            conflicts.append(
+                {
+                    "key": key,
+                    "boleto_id": boleto.get("id"),
+                    "efi_charge_id": charge_id,
+                    "reason": "charge_id_already_used",
+                }
+            )
+            continue
+        if payload.boleto_ids and str(boleto.get("id")) not in {
+            str(item) for item in payload.boleto_ids
+        }:
+            continue
+        matches.append(
+            {
+                "boleto": boleto,
+                "efi_charge": charge,
+                "update": efi_charge_to_update_object(charge),
+            }
+        )
+
+    applied: list[dict[str, Any]] = []
+    if payload.apply:
+        for match in matches:
+            result = hasura_client.update_boleto_efi_data(
+                match["boleto"]["id"], match["update"]
+            )
+            applied.append({"boleto_id": match["boleto"]["id"], "hasura": result})
+
+    return {
+        "ok": True,
+        "applied": payload.apply,
+        "summary": {
+            "efi_charges": len(efi_charges),
+            "hasura_boletos": len(hasura_boletos),
+            "safe_matches": len(matches),
+            "conflicts": len(conflicts),
+            "updated": len(applied),
+        },
+        "matches": matches,
+        "conflicts": conflicts,
+        "applied_results": applied,
+        "efi": efi_response,
+    }
 
 
 def process_efi_notification(notification_token: str) -> None:
@@ -302,6 +441,73 @@ def get_notification(notification_token: str):
     except EfiAPIError as exc:
         return downstream_error_response("efi", exc)
     return {"ok": True, "efi": efi_response}
+
+
+@app.get("/reconciliacao/boletos", response_class=HTMLResponse)
+def reconciliation_page():
+    return """
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Reconciliação de boletos EFI x Hasura</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; }
+    label { display: block; margin: .75rem 0; }
+    input, button { padding: .5rem; }
+    pre { background: #111827; color: #e5e7eb; padding: 1rem; overflow: auto; }
+    .danger { color: #991b1b; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>Reconciliação de boletos EFI x Hasura</h1>
+  <p>Primeiro execute uma prévia. A atualização só grava no Hasura quando <code>apply=true</code>.</p>
+  <form id="form">
+    <label>Início <input name="begin_date" type="date" required></label>
+    <label>Fim <input name="end_date" type="date" required></label>
+    <label>Status EFI opcional <input name="status" placeholder="waiting, paid..."></label>
+    <label>Limite EFI <input name="limit" type="number" min="1" max="500" value="100"></label>
+    <label>Página EFI <input name="page" type="number" min="1" value="1"></label>
+    <button type="submit">Consultar prévia segura</button>
+    <button type="button" id="apply" class="danger">Aplicar matches seguros</button>
+  </form>
+  <pre id="out">Aguardando consulta...</pre>
+  <script>
+    async function run(apply) {
+      const form = new FormData(document.getElementById('form'));
+      const payload = Object.fromEntries(form.entries());
+      payload.limit = Number(payload.limit || 100);
+      payload.page = Number(payload.page || 1);
+      payload.apply = apply;
+      if (!payload.status) delete payload.status;
+      const res = await fetch('/reconciliacao/boletos', {
+        method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+      document.getElementById('out').textContent = JSON.stringify(await res.json(), null, 2);
+    }
+    document.getElementById('form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      run(false);
+    });
+    document.getElementById('apply').addEventListener('click', () => {
+      if (confirm('Aplicar somente os matches seguros no Hasura?')) run(true);
+    });
+  </script>
+</body>
+</html>
+"""
+
+
+@app.post("/reconciliacao/boletos")
+def reconcile_boletos_endpoint(payload: ReconcileBoletosRequest):
+    try:
+        return reconcile_boletos(payload)
+    except EfiAPIError as exc:
+        return downstream_error_response("efi", exc)
+    except HasuraAPIError as exc:
+        return downstream_error_response("hasura", exc)
 
 
 @app.post("/webhook")
