@@ -126,3 +126,22 @@ class CreateBoletoResponse(BaseModel):
     ok: bool
     efi: dict[str, Any]
     hasura: dict[str, Any] | None = None
+
+
+class EfiChargeIdRequest(BaseModel):
+    charge_id: int = Field(..., gt=0)
+
+
+class UpdateBoletoDueDateRequest(EfiChargeIdRequest):
+    vencimento: date
+
+
+class UpdateBoletoMetadataRequest(EfiChargeIdRequest):
+    custom_id: str | None = None
+    notification_url: str | None = None
+
+    @model_validator(mode="after")
+    def validate_payload(self) -> "UpdateBoletoMetadataRequest":
+        if not self.custom_id and not self.notification_url:
+            raise ValueError("Informe custom_id e/ou notification_url.")
+        return self
